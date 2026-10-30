@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "live-captions"
+version = "0.1.0"
+description = "Floating live captions and translation window powered by OpenAI Whisper"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = [
+    "faster-whisper>=1.0",
+    "sounddevice>=0.4.6",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+translate = ["argostranslate>=1.9"]
+openai = ["openai-whisper"]
+
+[project.scripts]
+live-captions = "live_captions.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["live_captions*"]
