@@ -25,7 +25,7 @@ Python 3.9+ with Tkinter (python.org installers include it; on Debian/Ubuntu
 `sudo apt install python3-tk portaudio19-dev`).
 
 ```bash
-git clone <this repo> live-captions
+git clone https://github.com/John-Butler3/live-captions.git
 cd live-captions
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
@@ -110,7 +110,7 @@ A ready-to-run `LiveCaptions.exe` (no Python needed) is built with PyInstaller.
 python.org (tick "Add python.exe to PATH"):
 
 ```powershell
-git clone <this repo> live-captions
+git clone https://github.com/John-Butler3/live-captions.git
 cd live-captions
 powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1
 ```
