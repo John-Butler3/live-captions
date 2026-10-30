@@ -102,6 +102,49 @@ use a smaller model (`-m tiny` / `-m base`), a fixed `-l` language, `--final-onl
 or a longer `--step`. On a modern laptop `small` keeps up comfortably;
 `tiny` works on very weak machines.
 
+## Windows executable
+
+A ready-to-run `LiveCaptions.exe` (no Python needed) is built with PyInstaller.
+
+**Build it yourself** on Windows 10/11 with Python 3.9+ installed from
+python.org (tick "Add python.exe to PATH"):
+
+```powershell
+git clone <this repo> live-captions
+cd live-captions
+powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1
+```
+
+The script creates `.venv-build`, installs the dependencies, runs the tests and
+writes `dist\LiveCaptions.exe` (roughly 250 MB, single file). Options:
+
+| Switch | Effect |
+|--------|--------|
+| `-OneDir` | folder build `dist\LiveCaptions\` that starts faster (nothing to unpack on launch) |
+| `-WithArgos` | bundle Argos Translate for translation into languages other than English (adds PyTorch, several hundred MB) |
+| `-Console` | keep a console window, so `--no-gui`, `--list-devices` and logs print to the terminal |
+
+**GitHub Actions**: `.github/workflows/build-windows.yml` builds the exe on a
+Windows runner. Run it from the Actions tab (workflow_dispatch) to get the exe
+as a downloadable artifact, or push a tag such as `v0.1.0` to attach it to a
+GitHub release.
+
+**Using the exe**
+
+* Double-click `LiveCaptions.exe`. The first start takes a few seconds while the
+  single-file bundle unpacks, then a few more while the Whisper model downloads
+  to `%USERPROFILE%\.cache\huggingface` (once).
+* Create a shortcut and add arguments in its *Target* field, for example
+  `LiveCaptions.exe -m tiny -l de -t en`. All command line options work.
+* Without Argos the exe translates into English only (`-t en`, Whisper's
+  built-in translation).
+* The windowed exe has no console; its log is written to
+  `%LOCALAPPDATA%\LiveCaptions\live-captions.log`, and `--list-devices` shows
+  a message box.
+* Windows SmartScreen will warn about an unsigned exe the first time; choose
+  "More info" → "Run anyway". Microphone access must be allowed for desktop
+  apps under *Settings → Privacy & security → Microphone*.
+
 ## How it is built
 
 ```
@@ -113,6 +156,8 @@ live_captions/
   overlay.py      Tkinter floating window
   cli.py          argument parsing and wiring
 tests/            engine segmentation tests (no models needed)
+run.py            entry point used by PyInstaller
+live_captions.spec, scripts/build_windows.ps1, .github/workflows/build-windows.yml
 ```
 
 ```bash

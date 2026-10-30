@@ -6,3 +6,5 @@ build/
 dist/
 *.egg-info/
 .DS_Store
+.venv-build/
+*.spec.bak

@@ -4,12 +4,51 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
+import platform
 import sys
 import threading
 
 from . import __version__
 from .engine import Caption, CaptionEngine, EngineConfig
 from .transcriber import MODEL_SIZES
+
+
+def default_font() -> str:
+    system = platform.system()
+    if system == "Windows":
+        return "Segoe UI"
+    if system == "Darwin":
+        return "Helvetica"
+    return "DejaVu Sans"
+
+
+def _windowed() -> bool:
+    """True when running as a GUI executable without a console (PyInstaller --windowed)."""
+    return getattr(sys, "frozen", False) and (sys.stdout is None or sys.stderr is None)
+
+
+def _log_dir() -> str:
+    if platform.system() == "Windows":
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    elif platform.system() == "Darwin":
+        base = os.path.expanduser("~/Library/Logs")
+    else:
+        base = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+    path = os.path.join(base, "LiveCaptions")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _redirect_streams_if_windowed() -> str | None:
+    """Without a console, stdout/stderr are None; send them to a log file instead."""
+    if not _windowed():
+        return None
+    log_path = os.path.join(_log_dir(), "live-captions.log")
+    f = open(log_path, "a", encoding="utf-8", buffering=1)
+    sys.stdout = sys.stdout or f
+    sys.stderr = sys.stderr or f
+    return log_path
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -61,7 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--no-gui", action="store_true", help="print captions to the terminal instead of a window")
     g.add_argument("--width", type=int, default=900, help="window width in pixels (default: 900)")
     g.add_argument("--font-size", type=int, default=22, help="caption font size (default: 22)")
-    g.add_argument("--font", default="Helvetica", help="caption font family")
+    g.add_argument("--font", default=default_font(), help="caption font family")
     g.add_argument("--opacity", type=float, default=0.85, help="window opacity 0.3-1.0 (default: 0.85)")
     g.add_argument("--history", type=int, default=3, help="finished lines kept on screen (default: 3)")
     g.add_argument("--position", choices=("bottom", "top", "center"), default="bottom")
@@ -73,7 +112,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> int:
+    log_path = _redirect_streams_if_windowed()
     args = build_parser().parse_args(argv)
+    if log_path:
+        # GUI-only executable: terminal modes make no sense, keep the window.
+        args.no_gui = False
     logging.basicConfig(
         level=logging.DEBUG if args.verbose > 1 else logging.INFO if args.verbose else logging.WARNING,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -85,7 +128,18 @@ def main(argv=None) -> int:
 
     if args.list_devices:
         from .audio import list_devices
-        print(list_devices())
+        devices = list_devices()
+        if log_path:
+            try:
+                import tkinter as tk
+                from tkinter import messagebox
+                root = tk.Tk()
+                root.withdraw()
+                messagebox.showinfo("Live Captions – input devices", devices)
+            except Exception:
+                print(devices)
+        else:
+            print(devices)
         return 0
 
     if args.translate and args.language and args.translate == args.language:

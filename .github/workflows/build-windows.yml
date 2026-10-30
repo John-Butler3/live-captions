@@ -1,0 +1,59 @@
+name: Build Windows exe
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      with_argos:
+        description: "Bundle Argos Translate (large)"
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip wheel
+          pip install -r requirements.txt pyinstaller pillow
+          if ("${{ inputs.with_argos }}" -eq "true") {
+            pip install --extra-index-url https://download.pytorch.org/whl/cpu argostranslate
+          }
+
+      - name: Tests
+        run: python -m unittest discover -s tests
+
+      - name: Build
+        run: |
+          python scripts\make_icon.py
+          $args = @()
+          if ("${{ inputs.with_argos }}" -eq "true") { $args += "--with-argos" }
+          python -m PyInstaller --noconfirm --clean live_captions.spec -- @args
+          Get-Item dist\LiveCaptions.exe | Format-List Name, Length
+
+      - name: Smoke test
+        run: |
+          # The GUI build has no console, so check it starts and exits cleanly.
+          $p = Start-Process -FilePath dist\LiveCaptions.exe -ArgumentList "--version" -PassThru -Wait
+          if ($p.ExitCode -ne 0) { throw "exe exited with $($p.ExitCode)" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LiveCaptions-windows-x64
+          path: dist/LiveCaptions.exe
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/LiveCaptions.exe
+          generate_release_notes: true
