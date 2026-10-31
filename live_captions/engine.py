@@ -7,9 +7,15 @@ streaming model):
 * Every ``step`` seconds of new audio, the whole buffer is transcribed and the
   result is published as a *partial* caption (it may change as more context
   arrives).
-* When ``silence`` seconds of quiet follow speech, or the buffer reaches
-  ``max_segment`` seconds, the segment is finalised: transcribed one last time,
-  published as a *final* caption, and the buffer is cleared.
+* When ``silence`` seconds of quiet follow speech, the segment is finalised:
+  transcribed one last time, published as a *final* caption, and the buffer is
+  cleared.
+* During continuous speech (no pause), once the buffer is longer than
+  ``commit_after`` seconds, Whisper's own sentence segments are used: every
+  segment that ended more than ``commit_margin`` seconds before the end of the
+  buffer is *committed* as a final caption and its audio dropped, so the window
+  stays short and lines come out sentence by sentence. ``max_segment`` is a hard
+  cap: the buffer is then cut at the quietest point near its end.
 
 Translation runs on its own thread so it never delays the captions: a caption
 is published immediately and re-published (same ``id``) once its translation
@@ -57,6 +63,8 @@ class EngineConfig:
     silence_threshold: float = 0.01      # RMS below this counts as silence
     min_speech: float = 0.3              # ignore segments shorter than this
     translate_partials: bool = True
+    commit_after: float = 5.0            # continuous speech: start committing sentences after this
+    commit_margin: float = 1.0           # ...that ended this long before the buffer end (stable)
 
 
 PARTIAL = "partial"  # queue marker: "a new partial caption is pending"
@@ -161,24 +169,25 @@ class CaptionEngine:
                         silence_run += len(block) / SAMPLE_RATE
 
                 seconds = buf_len / SAMPLE_RATE
-                end_segment = False
+                end_reason = None
                 if stream_ended:
-                    end_segment = speech_seen
+                    end_reason = "stream" if speech_seen else None
                 elif speech_seen and silence_run >= cfg.silence:
                     # Short pauses only end a segment once it has enough context; a
                     # longer pause (2x) always ends it so short replies show promptly.
-                    end_segment = seconds >= cfg.min_segment or silence_run >= 2 * cfg.silence
+                    if seconds >= cfg.min_segment or silence_run >= 2 * cfg.silence:
+                        end_reason = "pause"
                 elif seconds >= cfg.max_segment:
-                    end_segment = True
+                    end_reason = "cap"
 
-                if not speech_seen and not end_segment:
+                if not speech_seen and end_reason is None:
                     # Pure silence so far: keep only the tail so the buffer doesn't grow.
                     if seconds > 1.0:
                         buf, buf_len = _tail(buf, int(0.5 * SAMPLE_RATE))
                         since_partial = 0
                     continue
 
-                if end_segment:
+                if end_reason in ("pause", "stream"):
                     audio = np.concatenate(buf) if buf else np.zeros(0, np.float32)
                     buf, buf_len, since_partial = [], 0, 0
                     speech_seen, silence_run = False, 0.0
@@ -188,10 +197,26 @@ class CaptionEngine:
                     self._segment_id = next(self._ids)
                     continue
 
+                if end_reason == "cap":
+                    # Hard cap without a pause: cut at the quietest point in the last part
+                    # of the buffer, finalise what is before it and carry the rest over.
+                    audio = np.concatenate(buf)
+                    cut = _quietest_cut(audio, int(0.6 * len(audio)))
+                    head, tail = audio[:cut], audio[cut:]
+                    self._emit(head, final=True, previous=last_partial_text)
+                    buf, buf_len, since_partial = [tail], len(tail), len(tail)
+                    last_partial_text = ""
+                    silence_run = 0.0
+                    self._segment_id = next(self._ids)
+                    continue
+
                 if since_partial >= cfg.step * SAMPLE_RATE:
                     since_partial = 0
                     audio = np.concatenate(buf)
-                    last_partial_text = self._emit(audio, final=False, previous=last_partial_text)
+                    last_partial_text, drop = self._emit_partial(audio, last_partial_text)
+                    if drop:
+                        rest = audio[drop:]
+                        buf, buf_len = ([rest] if len(rest) else []), len(rest)
         finally:
             self._jobs.put(None)  # let the translation thread drain and exit
 
@@ -272,6 +297,66 @@ class CaptionEngine:
         threshold = max(self.cfg.silence_threshold, min(self._noise_floor * 3.0, self.cfg.silence_threshold * 4))
         return rms > threshold
 
+    def _emit_partial(self, audio: np.ndarray, previous: str) -> tuple[str, int]:
+        """Publish a partial caption; commit stable leading sentences during long speech.
+
+        Returns (partial_text, samples_to_drop_from_buffer).
+        """
+        cfg = self.cfg
+        seconds = len(audio) / SAMPLE_RATE
+        result = self._transcribe(audio)
+        if result is None:
+            return previous, 0
+        drop = 0
+        segs = result.segments
+        if seconds >= cfg.commit_after and len(segs) >= 2:
+            stable = [sg for sg in segs[:-1] if sg.end <= seconds - cfg.commit_margin]
+            if stable:
+                committed = " ".join(sg.text for sg in stable if sg.text).strip()
+                drop = min(len(audio), int(stable[-1].end * SAMPLE_RATE))
+                if committed:
+                    self._publish(committed, result.language, final=True)
+                    self._segment_id = next(self._ids)
+                rest_text = " ".join(sg.text for sg in segs[len(stable):] if sg.text).strip()
+                if rest_text:
+                    self._publish(rest_text, result.language, final=False)
+                return rest_text, drop
+        text = self._shown_text(result)
+        if text:
+            self._publish(text, result.language, final=False)
+        return text or previous, 0
+
+    def _shown_text(self, result) -> str:
+        return result.text
+
+    def _transcribe(self, audio: np.ndarray):
+        cfg = self.cfg
+        t0 = time.monotonic()
+        try:
+            task = "translate" if self._whisper_translate else "transcribe"
+            result = self.transcriber.transcribe(audio, cfg.language, task=task)
+        except Exception as exc:
+            log.exception("transcription failed")
+            self.on_status(f"error: {exc}")
+            return None
+        dt = time.monotonic() - t0
+        log.debug("transcribed %.1fs audio in %.2fs: %r", len(audio) / SAMPLE_RATE, dt, result.text)
+        if dt > max(2.0 * cfg.step, 3.0) and not self._slow_hint_shown:
+            self._slow_hint_shown = True
+            log.warning("transcription took %.1fs for %.1fs of audio", dt, len(audio) / SAMPLE_RATE)
+            self.on_status(SLOW_HINT)
+        return result
+
+    def _publish(self, text: str, language, final: bool) -> None:
+        lang = self.cfg.language or language
+        if self._whisper_translate:
+            cap = Caption("", text, lang, final=final, id=self._segment_id)
+        else:
+            cap = Caption(text, "", lang, final=final, id=self._segment_id)
+        self.on_caption(cap)
+        if self._translate:
+            self._queue_translation(cap)
+
     def _emit(self, audio: np.ndarray, final: bool, previous: str = "") -> str:
         cfg = self.cfg
         t0 = time.monotonic()
@@ -309,6 +394,16 @@ class CaptionEngine:
         if self._translate:
             self._queue_translation(cap)
         return text or translation
+
+
+def _quietest_cut(audio: np.ndarray, start: int, window: int = SAMPLE_RATE // 10) -> int:
+    """Index of the quietest `window`-sized block at or after `start` (for a soft cut)."""
+    best, best_rms = len(audio), float("inf")
+    for i in range(start, len(audio) - window, window):
+        rms = float(np.sqrt(np.mean(audio[i:i + window] ** 2)))
+        if rms < best_rms:
+            best, best_rms = i + window // 2, rms
+    return best
 
 
 def _tail(blocks: list[np.ndarray], keep: int) -> tuple[list[np.ndarray], int]:

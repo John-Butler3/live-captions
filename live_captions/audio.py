@@ -173,6 +173,11 @@ def load_audio(path: Path) -> np.ndarray:
             return _load_wav(path)
         except Exception:
             pass  # fall through to ffmpeg for exotic WAV encodings
+    try:
+        # PyAV ships with faster-whisper and decodes mp3/mp4/flac/ogg without ffmpeg on PATH.
+        return _load_with_pyav(path)
+    except ImportError:
+        pass
     cmd = [
         "ffmpeg", "-nostdin", "-threads", "0", "-i", str(path),
         "-f", "s16le", "-ac", "1", "-acodec", "pcm_s16le", "-ar", str(SAMPLE_RATE), "-",
@@ -180,10 +185,27 @@ def load_audio(path: Path) -> np.ndarray:
     try:
         out = subprocess.run(cmd, capture_output=True, check=True).stdout
     except FileNotFoundError as exc:
-        raise RuntimeError("ffmpeg is required to decode non-WAV files") from exc
+        raise RuntimeError("ffmpeg (or faster-whisper) is required to decode non-WAV files") from exc
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(f"ffmpeg failed: {exc.stderr.decode(errors='ignore')}") from exc
     return np.frombuffer(out, np.int16).astype(np.float32) / 32768.0
+
+
+def _load_with_pyav(path: Path) -> np.ndarray:
+    import av
+
+    chunks = []
+    with av.open(str(path), mode="r") as container:
+        stream = container.streams.audio[0]
+        resampler = av.AudioResampler(format="s16", layout="mono", rate=SAMPLE_RATE)
+        for frame in container.decode(stream):
+            for out in resampler.resample(frame):
+                chunks.append(out.to_ndarray().reshape(-1))
+        for out in resampler.resample(None):  # flush
+            chunks.append(out.to_ndarray().reshape(-1))
+    if not chunks:
+        return np.zeros(0, np.float32)
+    return np.concatenate(chunks).astype(np.float32) / 32768.0
 
 
 def _load_wav(path: Path) -> np.ndarray:

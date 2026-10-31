@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from live_captions.audio import BLOCK_SIZE, SAMPLE_RATE, AudioSource  # noqa: E402
 from live_captions.engine import CaptionEngine, EngineConfig  # noqa: E402
-from live_captions.transcriber import Transcriber, Transcript  # noqa: E402
+from live_captions.transcriber import Segment, Transcriber, Transcript, collapse_repeats  # noqa: E402
 from live_captions.translator import Translator  # noqa: E402
 
 
@@ -37,6 +37,26 @@ class FakeTranscriber(Transcriber):
         secs = len(audio) / SAMPLE_RATE
         self.calls.append((secs, task))
         return Transcript(text=f"{secs:.1f}s", language="en")
+
+
+class SentenceTranscriber(Transcriber):
+    """Pretends every 2 s of audio is one sentence, with timestamps."""
+
+    def __init__(self):
+        self.calls = []
+
+    def transcribe(self, audio, language, task="transcribe"):
+        secs = len(audio) / SAMPLE_RATE
+        self.calls.append(secs)
+        segs = []
+        t = 0.0
+        n = 0
+        while t < secs:
+            end = min(secs, t + 2.0)
+            segs.append(Segment(t, end, f"S{n}({t:.0f}-{end:.0f})"))
+            t = end
+            n += 1
+        return Transcript(" ".join(sg.text for sg in segs), "en", segs)
 
 
 class UpperTranslator(Translator):
@@ -86,6 +106,46 @@ class ResamplerTests(unittest.TestCase):
         r = Resampler(44100, 16000)
         out = np.concatenate([r.process(np.zeros(4410, np.float32)) for _ in range(10)])
         self.assertAlmostEqual(len(out) / 16000, 1.0, places=2)
+
+
+class RepeatCollapseTests(unittest.TestCase):
+    def test_collapse(self):
+        self.assertEqual(collapse_repeats("and the and the and the and the people"), "and the people")
+        self.assertEqual(collapse_repeats("no no no no"), "no no")
+        self.assertEqual(collapse_repeats("I think that that is fine"), "I think that that is fine")
+        self.assertEqual(collapse_repeats("a b c a b c a b c d"), "a b c d")
+        self.assertEqual(collapse_repeats(""), "")
+
+
+class ContinuousSpeechTests(unittest.TestCase):
+    def test_sentences_committed_during_long_speech(self):
+        audio = np.concatenate([tone(14.0), silence(2.0)])
+        captions = []
+        tr = SentenceTranscriber()
+        eng = CaptionEngine(ArraySource(audio), tr, Translator(),
+                            EngineConfig(step=1.0, commit_after=5.0, commit_margin=1.0, max_segment=12.0),
+                            captions.append)
+        eng.start()
+        deadline = time.time() + 10
+        while not eng.finished and time.time() < deadline:
+            eng.join(0.1)
+        finals = [c for c in captions if c.final]
+        # Sentences come out one by one instead of one 12 s block.
+        self.assertGreaterEqual(len(finals), 4)
+        self.assertEqual([c.id for c in finals], sorted(set(c.id for c in finals)))
+        # The buffer never grows to the hard cap: committed audio is dropped.
+        self.assertLess(max(tr.calls), 12.0)
+        # Nothing is lost or duplicated: every 2 s sentence index appears exactly once in order.
+        texts = " ".join(c.text for c in finals)
+        self.assertNotIn("S0(0-2) S0(0-2)", texts)
+        self.assertTrue(texts.startswith("S0(0-2)"))
+
+    def test_hard_cap_cuts_at_quiet_point(self):
+        from live_captions.engine import _quietest_cut
+
+        audio = np.concatenate([tone(5.0, 0.5), tone(0.3, 0.01), tone(5.0, 0.5)])
+        cut = _quietest_cut(audio, int(0.3 * len(audio)))
+        self.assertAlmostEqual(cut / SAMPLE_RATE, 5.15, delta=0.2)
 
 
 class EngineTests(unittest.TestCase):

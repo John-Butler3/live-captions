@@ -37,6 +37,8 @@ class Settings:
     silence: float = 0.7
     min_segment: float = 3.0
     silence_threshold: float = 0.01
+    commit_after: float = 5.0
+    commit_margin: float = 1.0
     # window
     width: int = 900
     height: int = 0               # pixels; 0 = automatic (4 lines at the font size)
@@ -52,7 +54,7 @@ class Settings:
 
     ENGINE_FIELDS = ("model", "language", "backend", "device", "compute_type", "threads", "beam_size",
                      "target", "translator", "translate_partials", "input_device", "step", "max_segment",
-                     "silence", "min_segment", "silence_threshold")
+                     "silence", "min_segment", "silence_threshold", "commit_after", "commit_margin")
     MODEL_FIELDS = ("model", "backend", "device", "compute_type", "threads", "beam_size")
 
     def copy(self) -> "Settings":

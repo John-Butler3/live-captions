@@ -22,6 +22,8 @@ def engine_config(s: Settings) -> EngineConfig:
         silence_threshold=s.silence_threshold,
         min_segment=s.min_segment,
         translate_partials=s.translate_partials,
+        commit_after=s.commit_after,
+        commit_margin=s.commit_margin,
     )
 
 

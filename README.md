@@ -79,7 +79,8 @@ Run `live-captions --help` for everything. Useful knobs:
 | `--step` | 1.5 | seconds of new audio between live updates |
 | `--silence` | 0.7 | pause length that ends a sentence |
 | `--min-segment` | 3 | a pause only ends a sentence once it is this long (keeps context) |
-| `--max-segment` | 12 | hard limit per caption line |
+| `--max-segment` | 12 | hard limit per caption line (cut at the quietest point near the end) |
+| `--commit-after` / `--commit-margin` | 5 / 1 | during continuous speech, finish sentences this early |
 | `--silence-threshold` | 0.01 | raise in noisy rooms if lines never end |
 | `--final-only` | off | translate finished lines only, saves CPU |
 | `--width`, `--height`, `--font-size`, `--opacity`, `--position`, `--history` | | window appearance (height 0 = fit 4 lines) |
@@ -111,7 +112,13 @@ virtual input and select it with `-i`:
 
 Whisper is not a streaming model, so the app transcribes a rolling buffer of
 the current sentence every `--step` seconds and replaces the live line; when a
-pause is detected the sentence is finalised. Translation runs on its own
+pause is detected the sentence is finalised. During continuous talking with no
+pauses, Whisper's own sentence boundaries are used instead: once the buffer is
+longer than `--commit-after` seconds, every sentence that ended at least
+`--commit-margin` seconds ago is committed as a finished line and its audio
+dropped, so lines come out sentence by sentence and the window never has to
+chop a long speech mid-word. Phrases that Whisper repeats in a loop (a known
+failure mode on long windows) are collapsed. Translation runs on its own
 thread, so captions are never delayed by it: a line appears first and its
 translation follows a moment later (Argos takes well under 0.1 s per sentence
 once loaded).

@@ -102,6 +102,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help=f"seconds of silence that ends a sentence (default: {D.silence})")
     g.add_argument("--min-segment", type=float, default=S, dest="min_segment",
                    help=f"seconds before a short pause may end a sentence (default: {D.min_segment:g})")
+    g.add_argument("--commit-after", type=float, default=S, dest="commit_after",
+                   help=f"continuous speech: commit finished sentences once the buffer exceeds this "
+                        f"many seconds (default: {D.commit_after:g})")
+    g.add_argument("--commit-margin", type=float, default=S, dest="commit_margin",
+                   help=f"...that ended at least this many seconds ago (default: {D.commit_margin:g})")
     g.add_argument("--silence-threshold", type=float, default=S, dest="silence_threshold",
                    help=f"RMS level treated as silence; raise in noisy rooms (default: {D.silence_threshold})")
 
