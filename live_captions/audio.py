@@ -158,15 +158,18 @@ def _resolve_device(sd, device):
         return None
     if isinstance(device, int) or (isinstance(device, str) and device.isdigit()):
         return int(device)
-    # Exact name first, then substring match; input devices only.
+    # Exact name first, then substring match; input devices only. On Windows the
+    # same device appears once per host API; prefer WASAPI over MME/DirectSound.
     needle = device.lower()
     devices = [(i, d) for i, d in enumerate(sd.query_devices()) if d["max_input_channels"] > 0]
-    for idx, info in devices:
-        if info["name"].lower() == needle:
-            return idx
-    for idx, info in devices:
-        if needle in info["name"].lower():
-            return idx
+    apis = sd.query_hostapis()
+    for matcher in (lambda n: n == needle, lambda n: needle in n):
+        matches = [(i, d) for i, d in devices if matcher(d["name"].lower())]
+        if matches:
+            for i, d in matches:
+                if "wasapi" in apis[d["hostapi"]]["name"].lower():
+                    return i
+            return matches[0][0]
     raise ValueError(f"no input device matching {device!r}; use --list-devices")
 
 

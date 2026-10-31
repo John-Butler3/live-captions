@@ -57,7 +57,7 @@ class SettingsDialog(tk.Toplevel):
         self.var_device = tk.StringVar(value=self._device_label(settings.input_device))
         cb = ttk.Combobox(body, textvariable=self.var_device, values=dev_values, width=44)
         cb.grid(row=row, column=1, sticky="ew", **pad)
-        ttk.Button(body, text="↻", width=3, command=self._refresh_devices).grid(row=row, column=2, **pad)
+        ttk.Button(body, text="Refresh", command=self._refresh_devices).grid(row=row, column=2, **pad)
         self._device_box = cb
         row += 1
 
