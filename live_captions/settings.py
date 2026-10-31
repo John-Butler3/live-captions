@@ -39,6 +39,9 @@ class Settings:
     silence_threshold: float = 0.01
     # window
     width: int = 900
+    height: int = 0               # pixels; 0 = automatic (4 lines at the font size)
+    pos_x: int = -1               # remembered window position; -1 = use `position`
+    pos_y: int = -1
     font_size: int = 22
     font_family: str = ""         # "" = platform default
     opacity: float = 0.85

@@ -109,6 +109,7 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--no-gui", action="store_true", help="print captions to the terminal instead of a window")
     g.add_argument("--settings", action="store_true", help="open the Settings window on start")
     g.add_argument("--width", type=int, default=S, help=f"window width in pixels (default: {D.width})")
+    g.add_argument("--height", type=int, default=S, help="window height in pixels (default: fits 4 lines)")
     g.add_argument("--font-size", type=int, default=S, dest="font_size",
                    help=f"caption font size (default: {D.font_size})")
     g.add_argument("--font", default=S, dest="font_family", help="caption font family")
@@ -181,7 +182,8 @@ def main(argv=None) -> int:
     from .app import App
 
     overlay = CaptionOverlay(OverlayConfig(
-        width=settings.width, font_family=settings.font_family or default_font(),
+        width=settings.width, height=settings.height, pos_x=settings.pos_x, pos_y=settings.pos_y,
+        font_family=settings.font_family or default_font(),
         font_size=settings.font_size, opacity=max(0.3, min(1.0, settings.opacity)),
         history=settings.history, show_original=settings.show_original,
         show_translation=settings.show_translation, position=settings.position,

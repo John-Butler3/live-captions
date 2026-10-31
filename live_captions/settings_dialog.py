@@ -125,6 +125,13 @@ class SettingsDialog(tk.Toplevel):
         ttk.Spinbox(body, from_=300, to=4000, increment=50, textvariable=self.var_width, width=6).grid(
             row=row, column=1, sticky="w", **pad)
         row += 1
+        label("Window height")
+        self.var_height = tk.IntVar(value=settings.height)
+        ttk.Spinbox(body, from_=0, to=2000, increment=20, textvariable=self.var_height, width=6).grid(
+            row=row, column=1, sticky="w", **pad)
+        ttk.Label(body, text="0 = fit 4 lines; or drag the ◢ corner", foreground="#666666").grid(
+            row=row, column=1, sticky="w", padx=(80, 8))
+        row += 1
         label("Opacity")
         self.var_opacity = tk.DoubleVar(value=settings.opacity)
         ttk.Scale(body, from_=0.3, to=1.0, variable=self.var_opacity, length=200).grid(
@@ -196,6 +203,7 @@ class SettingsDialog(tk.Toplevel):
         try:
             s.font_size = max(10, min(72, int(self.var_font.get())))
             s.width = max(300, int(self.var_width.get()))
+            s.height = max(0, int(self.var_height.get()))
             s.history = max(1, int(self.var_history.get()))
             s.opacity = round(max(0.3, min(1.0, float(self.var_opacity.get()))), 2)
         except (tk.TclError, ValueError):

@@ -17,8 +17,10 @@ another language. Speech recognition runs locally with OpenAI Whisper
 * Settings window (⚙ button, double-click, or right-click → Settings…) to pick
   the microphone, the spoken language, the language to translate into, the
   Whisper model and the look; settings are remembered between runs
-* Drag anywhere to move, drag the ◢ corner to resize, `+` / `-` for font size,
-  right-click (or Ctrl-click) for the menu, `Esc` to quit
+* Fixed-size box: new lines scroll in at the bottom, the window never grows
+  or jumps. Drag anywhere to move, drag the ◢ corner to resize; size and
+  position are remembered. `+` / `-` for font size, right-click (or
+  Ctrl-click) for the menu, `Esc` to quit
 * Works on Windows, macOS and Linux (Python + Tkinter, no Electron)
 * Everything runs offline once the models are downloaded
 
@@ -80,7 +82,7 @@ Run `live-captions --help` for everything. Useful knobs:
 | `--max-segment` | 12 | hard limit per caption line |
 | `--silence-threshold` | 0.01 | raise in noisy rooms if lines never end |
 | `--final-only` | off | translate finished lines only, saves CPU |
-| `--width`, `--font-size`, `--opacity`, `--position`, `--history` | | window appearance |
+| `--width`, `--height`, `--font-size`, `--opacity`, `--position`, `--history` | | window appearance (height 0 = fit 4 lines) |
 | `--device cuda` | auto | use an NVIDIA GPU (install CUDA/cuDNN libs for CTranslate2) |
 
 ### Translation

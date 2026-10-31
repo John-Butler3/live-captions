@@ -1,4 +1,8 @@
-"""Floating always-on-top caption window (Tkinter, no extra dependencies)."""
+"""Floating always-on-top caption window (Tkinter, no extra dependencies).
+
+The window has a fixed size: new lines scroll in at the bottom, the window
+never grows or jumps. Drag anywhere to move it, drag the ◢ corner to resize.
+"""
 
 from __future__ import annotations
 
@@ -11,17 +15,23 @@ from typing import Callable, Optional
 from .engine import Caption
 from .settings import Settings
 
+MIN_WIDTH, MIN_HEIGHT = 300, 60
+AUTO_LINES = 4  # height used when no explicit height is set
+
 
 @dataclass
 class OverlayConfig:
     width: int = 900
+    height: int = 0                  # pixels; 0 = room for AUTO_LINES lines at the font size
     font_family: str = "Helvetica"
     font_size: int = 22
     opacity: float = 0.85
     history: int = 3                 # finalised lines kept on screen
     show_original: bool = True
     show_translation: bool = True
-    position: str = "bottom"         # bottom | top | center
+    position: str = "bottom"         # bottom | top | center (used when pos_x/pos_y unset)
+    pos_x: int = -1                  # remembered window position, -1 = use `position`
+    pos_y: int = -1
     margin: int = 60
     fg: str = "#ffffff"
     fg_dim: str = "#b8b8b8"
@@ -37,10 +47,12 @@ class CaptionOverlay:
     """
 
     def __init__(self, config: OverlayConfig, on_close: Optional[Callable[[], None]] = None,
-                 on_settings: Optional[Callable[[], None]] = None):
+                 on_settings: Optional[Callable[[], None]] = None,
+                 on_geometry: Optional[Callable[[int, int, int, int], None]] = None):
         self.cfg = config
         self.on_close = on_close or (lambda: None)
         self.on_settings = on_settings or (lambda: None)
+        self.on_geometry = on_geometry or (lambda x, y, w, h: None)
         self._queue: "queue.Queue[tuple[str, object]]" = queue.Queue()
         self._finals: list[Caption] = []
         self._partial: Optional[Caption] = None
@@ -122,6 +134,10 @@ class CaptionOverlay:
             except tk.TclError:
                 pass
 
+    @property
+    def geometry(self) -> tuple[int, int, int, int]:
+        return self._x, self._y, self._w, self._h
+
     # -- internals (Tk thread) -----------------------------------------------
 
     def _drain(self) -> None:
@@ -180,7 +196,7 @@ class CaptionOverlay:
         if t.get("end-2c", "end-1c") == "\n":
             t.delete("end-2c", "end-1c")
         t.configure(state="disabled")
-        self._fit_height()
+        t.see("end")  # newest line always visible at the bottom
 
     def _insert_caption(self, cap: Caption, partial: bool) -> int:
         n = 0
@@ -196,44 +212,42 @@ class CaptionOverlay:
             n += 1
         return n
 
-    def _fit_height(self) -> None:
-        self.root.update_idletasks()
-        display_lines = self.text.count("1.0", "end", "displaylines")
-        count = display_lines[0] if isinstance(display_lines, tuple) else (display_lines or 1)
-        self.text.configure(height=max(1, int(count)))
-        self.root.update_idletasks()
-        self._apply_geometry(keep_anchor=True)
+    # -- geometry ---------------------------------------------------------------
+
+    def _auto_height(self) -> int:
+        line = self._font.metrics("linespace") + 8  # spacing1 + spacing3
+        return AUTO_LINES * line + 2 * 10 + 4
 
     def _place_initial(self) -> None:
         self.root.update_idletasks()
         sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
-        w = min(self.cfg.width, sw - 2 * 20)
-        x = (sw - w) // 2
-        self._x, self._y, self._w = x, 0, w
-        self._anchor_bottom = self.cfg.position == "bottom"
-        self.root.geometry(f"{w}x100+{x}+0")
-        self.root.update_idletasks()
-        h = self.root.winfo_reqheight()
-        if self.cfg.position == "bottom":
-            self._y = sh - self.cfg.margin - h
-        elif self.cfg.position == "top":
-            self._y = self.cfg.margin
+        self._w = max(MIN_WIDTH, min(self.cfg.width, sw - 40))
+        self._h = max(MIN_HEIGHT, self.cfg.height or self._auto_height())
+        if self.cfg.pos_x >= 0 and self.cfg.pos_y >= 0 and self.cfg.pos_x < sw - 50 and self.cfg.pos_y < sh - 30:
+            self._x, self._y = self.cfg.pos_x, self.cfg.pos_y
         else:
-            self._y = (sh - h) // 2
+            self._x = (sw - self._w) // 2
+            if self.cfg.position == "top":
+                self._y = self.cfg.margin
+            elif self.cfg.position == "center":
+                self._y = (sh - self._h) // 2
+            else:
+                self._y = sh - self.cfg.margin - self._h
         self._apply_geometry()
+        self.root.update_idletasks()
         try:  # macOS needs alpha re-applied once the window exists
             self.root.attributes("-alpha", self.cfg.opacity)
         except tk.TclError:
             pass
         self.root.focus_force()
 
-    def _apply_geometry(self, keep_anchor: bool = False) -> None:
-        h = self.root.winfo_reqheight()
-        if keep_anchor and self._anchor_bottom:
-            bottom = self._y + self._last_h if hasattr(self, "_last_h") else self._y + h
-            self._y = bottom - h
-        self._last_h = h
-        self.root.geometry(f"{self._w}x{h}+{self._x}+{self._y}")
+    def _apply_geometry(self) -> None:
+        self.root.geometry(f"{self._w}x{self._h}+{self._x}+{self._y}")
+
+    def _geometry_changed(self) -> None:
+        self.cfg.pos_x, self.cfg.pos_y = self._x, self._y
+        self.cfg.width, self.cfg.height = self._w, self._h
+        self.on_geometry(self._x, self._y, self._w, self._h)
 
     # -- mouse: drag to move, grip to resize ----------------------------------
 
@@ -241,28 +255,44 @@ class CaptionOverlay:
         for widget in (self.root, self.frame, self.text):
             widget.bind("<ButtonPress-1>", self._drag_start)
             widget.bind("<B1-Motion>", self._drag_move)
+            widget.bind("<ButtonRelease-1>", self._drag_end)
         self._grip.bind("<ButtonPress-1>", self._resize_start)
         self._grip.bind("<B1-Motion>", self._resize_move)
+        self._grip.bind("<ButtonRelease-1>", self._resize_end)
 
     def _drag_start(self, event):
         self._drag = (event.x_root - self._x, event.y_root - self._y)
+        self._moved = False
         self.root.focus_force()  # so the +/-/Esc keys work after a click
         return "break"           # stop the Text widget from selecting text
 
     def _drag_move(self, event):
         dx, dy = self._drag
         self._x, self._y = event.x_root - dx, event.y_root - dy
+        self._moved = True
         self._apply_geometry()
         return "break"
 
-    def _resize_start(self, event) -> None:
-        self._resize = (event.x_root, self._w)
+    def _drag_end(self, event):
+        if getattr(self, "_moved", False):
+            self._moved = False
+            self._geometry_changed()
         return "break"
 
-    def _resize_move(self, event) -> None:
-        x0, w0 = self._resize
-        self._w = max(300, w0 + (event.x_root - x0))
+    def _resize_start(self, event):
+        self._resize = (event.x_root, event.y_root, self._w, self._h)
+        return "break"
+
+    def _resize_move(self, event):
+        x0, y0, w0, h0 = self._resize
+        self._w = max(MIN_WIDTH, w0 + (event.x_root - x0))
+        self._h = max(MIN_HEIGHT, h0 + (event.y_root - y0))
+        self._apply_geometry()
         self._render()
+        return "break"
+
+    def _resize_end(self, event):
+        self._geometry_changed()
         return "break"
 
     # -- menu / settings ------------------------------------------------------
@@ -283,6 +313,7 @@ class CaptionOverlay:
         for pct in (100, 90, 80, 70, 60, 50):
             op.add_command(label=f"{pct}%", command=lambda p=pct: self.set_opacity(p / 100))
         m.add_cascade(label="Opacity", menu=op)
+        m.add_command(label="Fit height to text size", command=self.fit_height)
         m.add_command(label="Clear", command=self.clear)
         m.add_separator()
         m.add_command(label="Quit  (Esc)", command=self.close)
@@ -296,10 +327,21 @@ class CaptionOverlay:
 
     def change_font(self, delta: int) -> None:
         size = max(10, min(72, self._font.cget("size") + delta))
+        self._set_font_size(size)
+        self._render()
+
+    def _set_font_size(self, size: int) -> None:
         self._font.configure(size=size)
         self._font_partial.configure(size=size)
         self._font_small.configure(size=max(9, size - 10))
+        self.cfg.font_size = size
+
+    def fit_height(self) -> None:
+        """Resize the window to AUTO_LINES lines at the current font size."""
+        self._h = self._auto_height()
+        self._apply_geometry()
         self._render()
+        self._geometry_changed()
 
     def set_opacity(self, value: float) -> None:
         try:
@@ -318,7 +360,6 @@ class CaptionOverlay:
 
     def apply_settings(self, s: Settings) -> None:
         """Apply the appearance part of the user settings at runtime."""
-        self.cfg.font_size = s.font_size
         self.cfg.opacity = s.opacity
         self.cfg.history = s.history
         self.cfg.show_original = s.show_original
@@ -327,16 +368,17 @@ class CaptionOverlay:
             self.cfg.font_family = s.font_family
             for f in (self._font, self._font_partial, self._font_small):
                 f.configure(family=s.font_family)
-        self._font.configure(size=s.font_size)
-        self._font_partial.configure(size=s.font_size)
-        self._font_small.configure(size=max(9, s.font_size - 10))
+        self._set_font_size(s.font_size)
         self._var_orig.set(s.show_original)
         self._var_trans.set(s.show_translation)
         self.text.tag_configure("orig", foreground=self.cfg.fg_dim if self.cfg.show_translation else self.cfg.fg)
         self.set_opacity(s.opacity)
-        if s.width != self._w:
-            self._w = max(300, min(s.width, self.root.winfo_screenwidth() - 40))
-            self._x = max(0, min(self._x, self.root.winfo_screenwidth() - self._w))
+        sw = self.root.winfo_screenwidth()
+        self._w = max(MIN_WIDTH, min(s.width, sw - 40))
+        self._h = max(MIN_HEIGHT, s.height or self._auto_height())
+        self._x = max(0, min(self._x, sw - self._w))
+        self.cfg.width, self.cfg.height = s.width, s.height
+        self._apply_geometry()
         del self._finals[: -self.cfg.history]
         self._render()
 

@@ -60,6 +60,8 @@ class App:
         self._dialog = None
         overlay.on_close = self.shutdown
         overlay.on_settings = self.open_settings
+        overlay.on_geometry = self._geometry_changed
+        self._save_job = None
 
     # -- lifecycle ---------------------------------------------------------------
 
@@ -92,6 +94,22 @@ class App:
         self.overlay.apply_settings(new)
         if new.engine_changed(old):
             self._restart_async()
+
+    def _geometry_changed(self, x: int, y: int, w: int, h: int) -> None:
+        """Remember where the user put the window (saved shortly after the drag ends)."""
+        s = self.settings
+        s.pos_x, s.pos_y, s.width, s.height = x, y, w, h
+        s.font_size = self.overlay.cfg.font_size
+        if self._save_job is not None:
+            self.overlay.root.after_cancel(self._save_job)
+        self._save_job = self.overlay.root.after(1000, self._save_quiet)
+
+    def _save_quiet(self) -> None:
+        self._save_job = None
+        try:
+            save_settings(self.settings)
+        except Exception:
+            log.exception("could not save settings")
 
     # -- engine --------------------------------------------------------------------
 
