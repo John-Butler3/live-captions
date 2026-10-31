@@ -62,6 +62,9 @@ class ArgosTranslator(Translator):
         import os
 
         os.environ.setdefault("ARGOS_DEVICE_TYPE", "cpu")
+        # Argos' default compute type "auto" quantizes older packs (e.g. es→en) to
+        # int8 and they then produce garbage; keep the precision stored in the model.
+        os.environ.setdefault("ARGOS_COMPUTE_TYPE", "default")
         import argostranslate.translate as at
 
         self._at = at

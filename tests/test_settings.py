@@ -84,6 +84,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(sorted_languages()[0], ("en", "English"))
         self.assertEqual(language_name(""), "Auto-detect")
         self.assertEqual(language_name("de"), "German")
+        self.assertIn("Bahasa Melayu", language_name("ms"))
         self.assertGreaterEqual(len(WHISPER_LANGUAGES), 99)
 
 
