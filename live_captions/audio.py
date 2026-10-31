@@ -158,10 +158,14 @@ def _resolve_device(sd, device):
         return None
     if isinstance(device, int) or (isinstance(device, str) and device.isdigit()):
         return int(device)
-    # Substring match on device name, input devices only.
+    # Exact name first, then substring match; input devices only.
     needle = device.lower()
-    for idx, info in enumerate(sd.query_devices()):
-        if info["max_input_channels"] > 0 and needle in info["name"].lower():
+    devices = [(i, d) for i, d in enumerate(sd.query_devices()) if d["max_input_channels"] > 0]
+    for idx, info in devices:
+        if info["name"].lower() == needle:
+            return idx
+    for idx, info in devices:
+        if needle in info["name"].lower():
             return idx
     raise ValueError(f"no input device matching {device!r}; use --list-devices")
 

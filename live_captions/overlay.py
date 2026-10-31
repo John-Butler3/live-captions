@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from .engine import Caption
+from .settings import Settings
 
 
 @dataclass
@@ -35,9 +36,11 @@ class CaptionOverlay:
     Tk main loop drains the queue.
     """
 
-    def __init__(self, config: OverlayConfig, on_close: Optional[Callable[[], None]] = None):
+    def __init__(self, config: OverlayConfig, on_close: Optional[Callable[[], None]] = None,
+                 on_settings: Optional[Callable[[], None]] = None):
         self.cfg = config
         self.on_close = on_close or (lambda: None)
+        self.on_settings = on_settings or (lambda: None)
         self._queue: "queue.Queue[tuple[str, object]]" = queue.Queue()
         self._finals: list[Caption] = []
         self._partial: Optional[Caption] = None
@@ -72,6 +75,12 @@ class CaptionOverlay:
 
         self._grip = tk.Label(self.root, text="◢", bg=config.bg, fg="#555555", cursor="sizing")
         self._grip.place(relx=1.0, rely=1.0, anchor="se")
+        self._gear = tk.Label(self.root, text="⚙", bg=config.bg, fg="#777777", cursor="hand2",
+                              font=tkfont.Font(family=config.font_family, size=13))
+        self._gear.place(relx=1.0, rely=0.0, anchor="ne", x=-4, y=2)
+        self._gear.bind("<ButtonPress-1>", lambda e: (self.on_settings(), "break")[1])
+        self._gear.bind("<Enter>", lambda e: self._gear.configure(fg="#ffffff"))
+        self._gear.bind("<Leave>", lambda e: self._gear.configure(fg="#777777"))
 
         self._bind_mouse()
         self._menu = self._build_menu()
@@ -84,6 +93,8 @@ class CaptionOverlay:
         self.root.bind("<Button-3>", self._popup)
         self.root.bind("<Button-2>", self._popup)  # macOS secondary click
         self.root.bind("<Control-Button-1>", self._popup)
+        self.root.bind("<Double-Button-1>", lambda e: self.on_settings())
+        self.root.bind("<comma>", lambda e: self.on_settings())
 
         self._place_initial()
         self._render()
@@ -241,6 +252,8 @@ class CaptionOverlay:
 
     def _build_menu(self) -> tk.Menu:
         m = tk.Menu(self.root, tearoff=0)
+        m.add_command(label="Settings…  (double-click)", command=lambda: self.on_settings())
+        m.add_separator()
         m.add_command(label="Bigger text  (+)", command=lambda: self.change_font(2))
         m.add_command(label="Smaller text  (-)", command=lambda: self.change_font(-2))
         m.add_separator()
@@ -284,6 +297,30 @@ class CaptionOverlay:
             self.cfg.show_original = True
             self._var_orig.set(True)
         self.text.tag_configure("orig", foreground=self.cfg.fg_dim if self.cfg.show_translation else self.cfg.fg)
+        self._render()
+
+    def apply_settings(self, s: Settings) -> None:
+        """Apply the appearance part of the user settings at runtime."""
+        self.cfg.font_size = s.font_size
+        self.cfg.opacity = s.opacity
+        self.cfg.history = s.history
+        self.cfg.show_original = s.show_original
+        self.cfg.show_translation = s.show_translation
+        if s.font_family:
+            self.cfg.font_family = s.font_family
+            for f in (self._font, self._font_partial, self._font_small):
+                f.configure(family=s.font_family)
+        self._font.configure(size=s.font_size)
+        self._font_partial.configure(size=s.font_size)
+        self._font_small.configure(size=max(9, s.font_size - 10))
+        self._var_orig.set(s.show_original)
+        self._var_trans.set(s.show_translation)
+        self.text.tag_configure("orig", foreground=self.cfg.fg_dim if self.cfg.show_translation else self.cfg.fg)
+        self.set_opacity(s.opacity)
+        if s.width != self._w:
+            self._w = max(300, min(s.width, self.root.winfo_screenwidth() - 40))
+            self._x = max(0, min(self._x, self.root.winfo_screenwidth() - self._w))
+        del self._finals[: -self.cfg.history]
         self._render()
 
     def clear(self) -> None:

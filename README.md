@@ -14,6 +14,9 @@ another language. Speech recognition runs locally with OpenAI Whisper
 ```
 
 * Borderless, semi-transparent, stays above every other window
+* Settings window (⚙ button, double-click, or right-click → Settings…) to pick
+  the microphone, the spoken language, the language to translate into, the
+  Whisper model and the look; settings are remembered between runs
 * Drag anywhere to move, drag the ◢ corner to resize, `+` / `-` for font size,
   right-click (or Ctrl-click) for the menu, `Esc` to quit
 * Works on Windows, macOS and Linux (Python + Tkinter, no Electron)
@@ -45,7 +48,8 @@ are cached in `~/.cache/huggingface`.
 ## Run
 
 ```bash
-live-captions                              # captions, auto-detect language, 'small' model
+live-captions                              # opens the window; first run opens Settings
+live-captions -m tiny                      # captions, auto-detect language, 'small' model
 live-captions -m tiny                      # fastest, lower accuracy
 live-captions -l de -t en                  # German speech, English translation
 live-captions -t es                        # any language → Spanish (Argos)
@@ -56,6 +60,12 @@ live-captions --no-gui -f talk.wav --fast  # terminal output, as fast as possibl
 live-captions --list-devices               # find a microphone / loopback device
 live-captions -i "BlackHole"               # capture from a named input device
 ```
+
+Command line options override the saved settings for that run. Settings
+live in `%APPDATA%\LiveCaptions\settings.json` on Windows,
+`~/Library/Application Support/LiveCaptions/settings.json` on macOS and
+`~/.config/LiveCaptions/settings.json` on Linux (`--reset-settings` ignores
+the file, `--settings` opens the Settings window on start).
 
 Run `live-captions --help` for everything. Useful knobs:
 
@@ -104,7 +114,15 @@ or a longer `--step`. On a modern laptop `small` keeps up comfortably;
 
 ## Windows executable
 
-A ready-to-run `LiveCaptions.exe` (no Python needed) is built with PyInstaller.
+Ready-to-run executables (no Python needed) are on the
+[releases page](https://github.com/John-Butler3/live-captions/releases):
+
+| File | Translation | Size |
+|------|-------------|------|
+| `LiveCaptions.exe` | into English only (Whisper's built-in translation) | ≈ 100 MB |
+| `LiveCaptions-full.exe` | into any of ~40 languages (Argos Translate bundled; language packs download on first use) | ≈ 400 MB |
+
+Both are built with PyInstaller by `.github/workflows/build-windows.yml`.
 
 **Build it yourself** on Windows 10/11 with Python 3.9+ installed from
 python.org (tick "Add python.exe to PATH"):
@@ -136,8 +154,8 @@ GitHub release.
   to `%USERPROFILE%\.cache\huggingface` (once).
 * Create a shortcut and add arguments in its *Target* field, for example
   `LiveCaptions.exe -m tiny -l de -t en`. All command line options work.
-* Without Argos the exe translates into English only (`-t en`, Whisper's
-  built-in translation).
+* Pick the microphone and languages in the Settings window (⚙). The plain exe
+  translates into English only; use `LiveCaptions-full.exe` for other targets.
 * The windowed exe has no console; its log is written to
   `%LOCALAPPDATA%\LiveCaptions\live-captions.log`, and `--list-devices` shows
   a message box.
@@ -154,6 +172,10 @@ live_captions/
   translator.py   Argos Translate, Whisper translate mode
   engine.py       rolling-buffer segmentation, partial/final captions
   overlay.py      Tkinter floating window
+  settings.py     persisted user settings (JSON)
+  settings_dialog.py  Tk settings window
+  app.py          controller: overlay + engine restart on settings change
+  languages.py    Whisper / Argos language tables
   cli.py          argument parsing and wiring
 tests/            engine segmentation tests (no models needed)
 run.py            entry point used by PyInstaller
