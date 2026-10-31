@@ -206,7 +206,7 @@ def _run_terminal(settings: Settings, args) -> int:
     from .translator import create_translator
 
     def on_status(text: str) -> None:
-        print(f"[{text}]", file=sys.stderr)
+        print(f"[{text.lstrip('!')}]", file=sys.stderr)
 
     on_status(f"loading Whisper '{settings.model}'…")
     transcriber = create_transcriber(
@@ -234,11 +234,15 @@ def _run_terminal(settings: Settings, args) -> int:
     return 0
 
 
+_printed_final = {"id": 0}
+
+
 def _print_caption(cap: Caption) -> None:
     if cap.final:
         sys.stdout.write("\r\033[K")
-        if cap.text:
+        if cap.text and cap.id != _printed_final["id"]:
             print(f"[{cap.language or '??'}] {cap.text}")
+            _printed_final["id"] = cap.id
         if cap.translation:
             print(f"   → {cap.translation}")
         sys.stdout.flush()

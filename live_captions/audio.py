@@ -10,7 +10,11 @@ import wave
 from pathlib import Path
 from typing import Iterator, Optional
 
+import logging
+
 import numpy as np
+
+log = logging.getLogger(__name__)
 
 SAMPLE_RATE = 16000  # Whisper's native sample rate
 BLOCK_SECONDS = 0.1  # size of each chunk handed to the engine
@@ -28,27 +32,47 @@ class AudioSource:
 
 
 class MicrophoneSource(AudioSource):
+    """Captures the microphone at 16 kHz, resampling if the device refuses that rate
+    (WASAPI shared mode on Windows only accepts the device's native rate)."""
+
     def __init__(self, device: Optional[str | int] = None):
         import sounddevice as sd  # imported lazily so file mode works without PortAudio
 
         self._sd = sd
         self._queue: "queue.Queue[np.ndarray]" = queue.Queue()
         self._closed = threading.Event()
-        self._stream = sd.InputStream(
-            samplerate=SAMPLE_RATE,
-            channels=1,
-            dtype="float32",
-            blocksize=BLOCK_SIZE,
-            device=_resolve_device(sd, device),
-            callback=self._callback,
-        )
+        self._pending = np.zeros(0, np.float32)
+        idx = _resolve_device(sd, device)
+        self._resampler: Optional[Resampler] = None
+        try:
+            self._stream = self._open(idx, SAMPLE_RATE, BLOCK_SIZE)
+        except Exception as exc:
+            native = int(sd.query_devices(idx, "input")["default_samplerate"])
+            log.info("16 kHz capture failed (%s); using %d Hz and resampling", exc, native)
+            self._resampler = Resampler(native, SAMPLE_RATE)
+            self._stream = self._open(idx, native, int(native * BLOCK_SECONDS))
         self._stream.start()
+        name = sd.query_devices(self._stream.device, "input")["name"]
+        log.info("capturing from %r at %d Hz", name, int(self._stream.samplerate))
+
+    def _open(self, idx, rate, blocksize):
+        return self._sd.InputStream(
+            samplerate=rate, channels=1, dtype="float32", blocksize=blocksize,
+            device=idx, callback=self._callback,
+        )
 
     def _callback(self, indata, frames, time_info, status):  # noqa: D401
         if status:
             # Over/underruns are not fatal; keep going.
             pass
-        self._queue.put(indata[:, 0].copy())
+        data = indata[:, 0].copy()
+        if self._resampler is not None:
+            data = self._resampler.process(data)
+        # Re-block to exactly BLOCK_SIZE samples so the engine's timing stays simple.
+        self._pending = np.concatenate([self._pending, data]) if len(self._pending) else data
+        while len(self._pending) >= BLOCK_SIZE:
+            self._queue.put(self._pending[:BLOCK_SIZE])
+            self._pending = self._pending[BLOCK_SIZE:]
 
     def blocks(self) -> Iterator[np.ndarray]:
         while not self._closed.is_set():
@@ -105,6 +129,41 @@ class FileSource(AudioSource):
 
     def close(self) -> None:
         self._closed.set()
+
+
+class Resampler:
+    """Simple streaming resampler (low-pass FIR + linear interpolation); fine for speech."""
+
+    def __init__(self, src: int, dst: int):
+        self.src, self.dst = src, dst
+        self._tail = np.zeros(0, np.float32)
+        self._phase = 0.0
+        if src > dst:
+            cutoff = 0.45 * dst / src          # normalised to src Nyquist
+            n = 31
+            k = np.arange(n) - (n - 1) / 2
+            h = np.sinc(2 * cutoff * k) * np.hamming(n)
+            self._fir = (h / h.sum()).astype(np.float32)
+        else:
+            self._fir = None
+        self._fir_state = np.zeros(len(self._fir) - 1, np.float32) if self._fir is not None else None
+
+    def process(self, data: np.ndarray) -> np.ndarray:
+        if self._fir is not None:
+            x = np.concatenate([self._fir_state, data])
+            self._fir_state = x[-(len(self._fir) - 1):]
+            data = np.convolve(x, self._fir, mode="valid").astype(np.float32)
+        x = np.concatenate([self._tail, data])
+        step = self.src / self.dst
+        positions = np.arange(self._phase, len(x) - 1, step)
+        if len(positions) == 0:
+            self._tail = x
+            return np.zeros(0, np.float32)
+        out = np.interp(positions, np.arange(len(x)), x).astype(np.float32)
+        consumed = int(np.floor(positions[-1] + step))
+        self._phase = positions[-1] + step - consumed
+        self._tail = x[consumed:]
+        return out
 
 
 def load_audio(path: Path) -> np.ndarray:

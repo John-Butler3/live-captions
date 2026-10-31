@@ -9,11 +9,17 @@ streaming model):
   arrives).
 * When ``silence`` seconds of quiet follow speech, or the buffer reaches
   ``max_segment`` seconds, the segment is finalised: transcribed one last time,
-  translated, published as a *final* caption, and the buffer is cleared.
+  published as a *final* caption, and the buffer is cleared.
+
+Translation runs on its own thread so it never delays the captions: a caption
+is published immediately and re-published (same ``id``) once its translation
+is ready. Partial captions are translated on a best-effort basis; if the
+translator is still busy, the newest partial simply waits for the next pass.
 """
 
 from __future__ import annotations
 
+import itertools
 import logging
 import queue
 import threading
@@ -36,6 +42,7 @@ class Caption:
     translation: str = ""     # translated text, if any
     language: Optional[str] = None
     final: bool = False
+    id: int = 0               # segment number; a later caption with the same id replaces it
     timestamp: float = field(default_factory=time.time)
 
 
@@ -52,6 +59,13 @@ class EngineConfig:
     translate_partials: bool = True
 
 
+PARTIAL = "partial"  # queue marker: "a new partial caption is pending"
+
+# A leading "!" marks a sticky status: the window keeps it until the next status.
+SLOW_HINT = ("!Whisper is slower than real time on this PC – pick a smaller model "
+             "(tiny or base) in Settings")
+
+
 class CaptionEngine:
     def __init__(self, source: AudioSource, transcriber: Transcriber, translator: Translator,
                  config: EngineConfig, on_caption: Callable[[Caption], None],
@@ -64,9 +78,18 @@ class CaptionEngine:
         self.on_status = on_status or (lambda s: None)
         self._stop = threading.Event()
         self._blocks: "queue.Queue[np.ndarray]" = queue.Queue()
+        # Finals are queued in order; partials are signalled with a marker and only the
+        # newest pending partial is translated (stale ones are dropped).
+        self._jobs: "queue.Queue[Optional[Caption | str]]" = queue.Queue()
+        self._pending_partial: Optional[Caption] = None
+        self._pending_lock = threading.Lock()
         self._threads: list[threading.Thread] = []
+        self._ids = itertools.count(1)
+        self._segment_id = next(self._ids)
+        self._slow_hint_shown = False
         # Whisper's own translate mode: one pass that outputs English.
         self._whisper_translate = translator.name == "whisper"
+        self._translate = bool(config.target) and not self._whisper_translate
         # Adaptive noise floor so the silence threshold follows the room.
         self._noise_floor = config.silence_threshold
 
@@ -77,12 +100,15 @@ class CaptionEngine:
             threading.Thread(target=self._capture_loop, name="capture", daemon=True),
             threading.Thread(target=self._process_loop, name="process", daemon=True),
         ]
+        if self._translate:
+            self._threads.append(threading.Thread(target=self._translate_loop, name="translate", daemon=True))
         for t in self._threads:
             t.start()
 
     def stop(self) -> None:
         self._stop.set()
         self.source.close()
+        self._jobs.put(None)
 
     def join(self, timeout: Optional[float] = None) -> None:
         for t in self._threads:
@@ -116,59 +142,124 @@ class CaptionEngine:
         last_partial_text = ""
         stream_ended = False
 
-        while not self._stop.is_set() and not stream_ended:
-            try:
-                block = self._blocks.get(timeout=0.5)
-            except queue.Empty:
-                continue
-            if block is None:
-                stream_ended = True
-                block = None
-            else:
-                buf.append(block)
-                buf_len += len(block)
-                since_partial += len(block)
-                is_speech = self._is_speech(block)
-                if is_speech:
-                    speech_seen = True
-                    silence_run = 0.0
+        try:
+            while not self._stop.is_set() and not stream_ended:
+                try:
+                    block = self._blocks.get(timeout=0.5)
+                except queue.Empty:
+                    continue
+                if block is None:
+                    stream_ended = True
                 else:
-                    silence_run += len(block) / SAMPLE_RATE
+                    buf.append(block)
+                    buf_len += len(block)
+                    since_partial += len(block)
+                    if self._is_speech(block):
+                        speech_seen = True
+                        silence_run = 0.0
+                    else:
+                        silence_run += len(block) / SAMPLE_RATE
 
-            seconds = buf_len / SAMPLE_RATE
-            end_segment = False
-            if stream_ended:
-                end_segment = speech_seen
-            elif speech_seen and silence_run >= cfg.silence:
-                # Short pauses only end a segment once it has enough context; a
-                # longer pause (2x) always ends it so short replies show promptly.
-                end_segment = seconds >= cfg.min_segment or silence_run >= 2 * cfg.silence
-            elif seconds >= cfg.max_segment:
-                end_segment = True
+                seconds = buf_len / SAMPLE_RATE
+                end_segment = False
+                if stream_ended:
+                    end_segment = speech_seen
+                elif speech_seen and silence_run >= cfg.silence:
+                    # Short pauses only end a segment once it has enough context; a
+                    # longer pause (2x) always ends it so short replies show promptly.
+                    end_segment = seconds >= cfg.min_segment or silence_run >= 2 * cfg.silence
+                elif seconds >= cfg.max_segment:
+                    end_segment = True
 
-            if not speech_seen and not end_segment:
-                # Pure silence so far: keep only the tail so the buffer doesn't grow.
-                if seconds > 1.0:
-                    buf, buf_len = _tail(buf, int(0.5 * SAMPLE_RATE))
+                if not speech_seen and not end_segment:
+                    # Pure silence so far: keep only the tail so the buffer doesn't grow.
+                    if seconds > 1.0:
+                        buf, buf_len = _tail(buf, int(0.5 * SAMPLE_RATE))
+                        since_partial = 0
+                    continue
+
+                if end_segment:
+                    audio = np.concatenate(buf) if buf else np.zeros(0, np.float32)
+                    buf, buf_len, since_partial = [], 0, 0
+                    speech_seen, silence_run = False, 0.0
+                    if len(audio) / SAMPLE_RATE >= cfg.min_speech:
+                        self._emit(audio, final=True, previous=last_partial_text)
+                    last_partial_text = ""
+                    self._segment_id = next(self._ids)
+                    continue
+
+                if since_partial >= cfg.step * SAMPLE_RATE:
                     since_partial = 0
-                continue
+                    audio = np.concatenate(buf)
+                    last_partial_text = self._emit(audio, final=False, previous=last_partial_text)
+        finally:
+            self._jobs.put(None)  # let the translation thread drain and exit
 
-            if end_segment:
-                audio = np.concatenate(buf) if buf else np.zeros(0, np.float32)
-                buf, buf_len, since_partial = [], 0, 0
-                speech_seen, silence_run = False, 0.0
-                if len(audio) / SAMPLE_RATE >= cfg.min_speech:
-                    self._emit(audio, final=True, previous=last_partial_text)
-                last_partial_text = ""
-                continue
-
-            if since_partial >= cfg.step * SAMPLE_RATE:
-                since_partial = 0
-                audio = np.concatenate(buf)
-                text = self._emit(audio, final=False, previous=last_partial_text)
-                last_partial_text = text
+    def _translate_loop(self) -> None:
+        """Translate finals in order; partials best-effort (only the newest one)."""
+        cfg = self.cfg
+        if cfg.language:
+            self._prepare_translator(cfg.language)
+        prepared = {cfg.language} if cfg.language else set()
+        while True:
+            job = self._jobs.get()
+            if job is None:
+                # Sentinel: finish whatever final jobs are queued, then exit.
+                while True:
+                    try:
+                        j = self._jobs.get_nowait()
+                    except queue.Empty:
+                        break
+                    if isinstance(j, Caption):
+                        self._run_translation(j, prepared)
+                return
+            if job == PARTIAL:
+                job = self._take_pending_partial()
+                if job is None:
+                    continue  # superseded by a newer partial or a final
+            self._run_translation(job, prepared)
 
     # -- helpers -------------------------------------------------------------
+
+    def _prepare_translator(self, language: str) -> None:
+        try:
+            self.translator.prepare(language, self.cfg.target, self.on_status)
+        except Exception as exc:
+            log.exception("translator preparation failed")
+            self.on_status(f"translation unavailable: {exc}")
+
+    def _run_translation(self, cap: Caption, prepared: set) -> None:
+        if not cap.text or not cap.language:
+            return
+        if cap.language not in prepared:
+            prepared.add(cap.language)
+            if cap.language != self.cfg.target:
+                self._prepare_translator(cap.language)
+        t0 = time.monotonic()
+        try:
+            translation = self.translator.translate(cap.text, cap.language, self.cfg.target)
+        except Exception:
+            log.exception("translation failed")
+            return
+        log.debug("translated %s in %.2fs: %r", "final" if cap.final else "partial",
+                  time.monotonic() - t0, translation)
+        if translation and not self._stop.is_set():
+            self.on_caption(Caption(cap.text, translation, cap.language, cap.final, cap.id))
+
+    def _take_pending_partial(self) -> Optional[Caption]:
+        with self._pending_lock:
+            cap, self._pending_partial = self._pending_partial, None
+        return cap
+
+    def _queue_translation(self, cap: Caption) -> None:
+        if cap.final:
+            with self._pending_lock:
+                self._pending_partial = None  # the final supersedes any pending partial
+            self._jobs.put(cap)
+        elif self.cfg.translate_partials:
+            with self._pending_lock:
+                self._pending_partial = cap
+            self._jobs.put(PARTIAL)
 
     def _is_speech(self, block: np.ndarray) -> bool:
         rms = float(np.sqrt(np.mean(block.astype(np.float64) ** 2)) + 1e-9)
@@ -190,10 +281,7 @@ class CaptionEngine:
                 text, translation = "", result.text
             else:
                 result = self.transcriber.transcribe(audio, cfg.language, task="transcribe")
-                text = result.text
-                translation = ""
-                if text and cfg.target and (final or cfg.translate_partials):
-                    translation = self.translator.translate(text, result.language, cfg.target)
+                text, translation = result.text, ""
         except Exception as exc:
             log.exception("transcription failed")
             self.on_status(f"error: {exc}")
@@ -201,13 +289,25 @@ class CaptionEngine:
         dt = time.monotonic() - t0
         log.debug("%s %.1fs audio in %.2fs: %r", "FINAL" if final else "partial",
                   len(audio) / SAMPLE_RATE, dt, text or translation)
+        if dt > max(2.0 * cfg.step, 3.0) and not self._slow_hint_shown:
+            self._slow_hint_shown = True
+            log.warning("transcription took %.1fs for %.1fs of audio", dt, len(audio) / SAMPLE_RATE)
+            self.on_status(SLOW_HINT)
         shown = text or translation
+        seg = self._segment_id
+        lang = cfg.language or result.language
         if not shown:
             if final and previous:
                 # Final pass heard nothing but partials did: keep what we showed.
-                self.on_caption(Caption(previous, "", result.language, final=True))
+                cap = Caption(previous, "", lang, final=True, id=seg)
+                self.on_caption(cap)
+                if self._translate:
+                    self._queue_translation(cap)
             return ""
-        self.on_caption(Caption(text, translation, result.language, final=final))
+        cap = Caption(text, translation, lang, final=final, id=seg)
+        self.on_caption(cap)
+        if self._translate:
+            self._queue_translation(cap)
         return text or translation
 
 

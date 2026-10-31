@@ -44,7 +44,9 @@ class CaptionOverlay:
         self._queue: "queue.Queue[tuple[str, object]]" = queue.Queue()
         self._finals: list[Caption] = []
         self._partial: Optional[Caption] = None
+        self._last_final_id = 0
         self._status = "loading model…"
+        self._status_sticky = False
 
         self.root = tk.Tk()
         self.root.title("Live Captions")
@@ -130,14 +132,29 @@ class CaptionOverlay:
                 if kind == "caption":
                     cap: Caption = payload  # type: ignore[assignment]
                     if cap.final:
-                        self._finals.append(cap)
-                        del self._finals[: -self.cfg.history]
-                        self._partial = None
-                    else:
-                        self._partial = cap
-                    self._status = ""
+                        self._last_final_id = max(self._last_final_id, cap.id)
+                        for i, old in enumerate(self._finals):
+                            if old.id == cap.id:
+                                self._finals[i] = cap  # translation arrived for a shown line
+                                break
+                        else:
+                            self._finals.append(cap)
+                            del self._finals[: -self.cfg.history]
+                        if self._partial is not None and self._partial.id <= cap.id:
+                            self._partial = None
+                    elif cap.id > self._last_final_id:
+                        cur = self._partial
+                        if not cap.translation:
+                            self._partial = cap  # fresh transcription always wins
+                        elif cur is not None and cur.id == cap.id and cur.text == cap.text:
+                            self._partial = cap  # translation for the text currently shown
+                        # else: translation of an outdated partial; ignore
+                    if not self._status_sticky:
+                        self._status = ""
                 elif kind == "status":
-                    self._status = str(payload)
+                    text = str(payload)
+                    self._status_sticky = text.startswith("!")
+                    self._status = text.lstrip("!")
                 changed = True
         except queue.Empty:
             pass
@@ -326,4 +343,5 @@ class CaptionOverlay:
     def clear(self) -> None:
         self._finals.clear()
         self._partial = None
+        self._last_final_id = 0
         self._render()

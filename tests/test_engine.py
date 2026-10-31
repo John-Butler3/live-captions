@@ -66,6 +66,28 @@ def run_engine(audio, cfg, translator=None):
     return captions, tr
 
 
+class ResamplerTests(unittest.TestCase):
+    def test_48k_to_16k_keeps_tone(self):
+        from live_captions.audio import Resampler
+
+        r = Resampler(48000, 16000)
+        t = np.arange(48000) / 48000
+        sig = np.sin(2 * np.pi * 440 * t).astype(np.float32)
+        out = np.concatenate([r.process(sig[i:i + 4800]) for i in range(0, 48000, 4800)])
+        self.assertAlmostEqual(len(out) / 16000, 1.0, places=2)
+        spec = np.abs(np.fft.rfft(out[1000:9000]))
+        freqs = np.fft.rfftfreq(8000, 1 / 16000)
+        self.assertAlmostEqual(freqs[spec.argmax()], 440.0, delta=3)
+        self.assertGreater(out[2000:9000].max(), 0.9)
+
+    def test_44k1_to_16k_length(self):
+        from live_captions.audio import Resampler
+
+        r = Resampler(44100, 16000)
+        out = np.concatenate([r.process(np.zeros(4410, np.float32)) for _ in range(10)])
+        self.assertAlmostEqual(len(out) / 16000, 1.0, places=2)
+
+
 class EngineTests(unittest.TestCase):
     def test_pause_splits_segments_and_emits_partials(self):
         audio = np.concatenate([tone(4.0), silence(1.5), tone(4.0), silence(1.5)])
@@ -106,16 +128,40 @@ class EngineTests(unittest.TestCase):
     def test_translation_attached(self):
         audio = np.concatenate([tone(3.5), silence(2.0)])
         caps, _ = run_engine(audio, EngineConfig(step=1.0, target="es"), UpperTranslator())
-        final = [c for c in caps if c.final][-1]
-        self.assertTrue(final.translation.startswith("ES:"))
-        partial = [c for c in caps if not c.final][0]
-        self.assertTrue(partial.translation.startswith("ES:"))
+        finals = [c for c in caps if c.final]
+        # The final is published at once, then republished with the same id once translated.
+        self.assertEqual(finals[0].translation, "")
+        self.assertTrue(finals[-1].translation.startswith("ES:"))
+        self.assertEqual(finals[0].id, finals[-1].id)
+        self.assertEqual(finals[0].text, finals[-1].text)
+        partials = [c for c in caps if not c.final]
+        self.assertTrue(any(c.translation.startswith("ES:") for c in partials))
+        self.assertTrue(all(c.id == finals[0].id for c in partials))
+
+    def test_segment_ids_increase(self):
+        audio = np.concatenate([tone(4.0), silence(1.5), tone(4.0), silence(1.5)])
+        caps, _ = run_engine(audio, EngineConfig(step=1.0, target="es"), UpperTranslator())
+        ids = [c.id for c in caps if c.final and not c.translation]
+        self.assertEqual(ids, sorted(ids))
+        self.assertEqual(len(set(ids)), 2)
+
+    def test_translator_prepared_with_forced_language(self):
+        class PrepTranslator(UpperTranslator):
+            prepared = []
+
+            def prepare(self, source, target, on_status=None):
+                self.prepared.append((source, target))
+                on_status("prepping")
+
+        audio = np.concatenate([tone(3.5), silence(2.0)])
+        caps, _ = run_engine(audio, EngineConfig(step=1.0, target="es", language="de"), PrepTranslator())
+        self.assertEqual(PrepTranslator.prepared, [("de", "es")])
 
     def test_final_only_skips_partial_translation(self):
         audio = np.concatenate([tone(3.5), silence(2.0)])
         caps, _ = run_engine(audio, EngineConfig(step=1.0, target="es", translate_partials=False), UpperTranslator())
         self.assertTrue(all(c.translation == "" for c in caps if not c.final))
-        self.assertTrue(all(c.translation for c in caps if c.final))
+        self.assertTrue([c for c in caps if c.final][-1].translation)
 
     def test_whisper_translate_mode_uses_translate_task(self):
         t = Translator()

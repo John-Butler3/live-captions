@@ -45,13 +45,13 @@ hiddenimports += ["sounddevice", "_cffi_backend"]
 
 excludes = ["matplotlib", "scipy", "pandas", "IPython", "jupyter", "pytest", "setuptools", "PyQt5", "PySide6"]
 if opts.with_argos:
-    for pkg in ("argostranslate", "stanza", "sentencepiece", "ctranslate2", "torch"):
+    for pkg in ("argostranslate", "stanza", "sentencepiece", "ctranslate2", "torch", "minisbd"):
         d, b, h = collect_all(pkg)
         datas += d
         binaries += b
         hiddenimports += h
 else:
-    excludes += ["argostranslate", "stanza", "torch", "sentencepiece"]
+    excludes += ["argostranslate", "stanza", "torch", "sentencepiece", "minisbd"]
 
 a = Analysis(
     [os.path.join(ROOT, "run.py")],

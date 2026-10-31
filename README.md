@@ -106,11 +106,36 @@ virtual input and select it with `-i`:
 
 Whisper is not a streaming model, so the app transcribes a rolling buffer of
 the current sentence every `--step` seconds and replaces the live line; when a
-pause is detected the sentence is finalised and translated. Each pass costs
-roughly the same regardless of audio length, so if the live line lags behind,
-use a smaller model (`-m tiny` / `-m base`), a fixed `-l` language, `--final-only`,
-or a longer `--step`. On a modern laptop `small` keeps up comfortably;
-`tiny` works on very weak machines.
+pause is detected the sentence is finalised. Translation runs on its own
+thread, so captions are never delayed by it: a line appears first and its
+translation follows a moment later (Argos takes well under 0.1 s per sentence
+once loaded).
+
+Each Whisper pass costs roughly the same regardless of audio length, so the
+model size decides whether the app keeps up. If a pass takes longer than the
+update interval the window shows a hint to pick a smaller model. Rough CPU
+times per pass with int8 on a recent laptop: `tiny` ≈ 0.3 s, `base` ≈ 0.5 s,
+`small` ≈ 1–2 s, `medium` ≈ 5 s. Fixing the spoken language (instead of
+auto-detect) and `--final-only` also save work. With an NVIDIA GPU
+(`--device cuda`, CUDA 12 + cuDNN 9 libraries installed) `small` runs in a
+fraction of a second.
+
+### First run and troubleshooting
+
+* **Model download**: the first start downloads the Whisper model (tiny ≈ 75 MB,
+  small ≈ 460 MB). The window shows "loading Whisper …" until it is ready.
+* **Language packs**: with Argos the first use of a language pair downloads a
+  ≈100 MB pack and the window shows "downloading language pack …". With
+  auto-detected speech the download happens after the first sentence is heard;
+  fixing the spoken language in Settings lets it download at start-up.
+* **Nothing is translated**: check the status line under the captions. English
+  speech with "Translate into: English" has nothing to translate; the plain exe
+  only translates *into* English (Whisper mode shows just the English line);
+  the full exe is needed for other target languages.
+* **No captions**: make sure the right microphone is selected (Settings) and
+  that Windows allows microphone access for desktop apps. The log is at
+  `%LOCALAPPDATA%\LiveCaptions\live-captions.log` (`-v` on the command line
+  for more detail).
 
 ## Windows executable
 

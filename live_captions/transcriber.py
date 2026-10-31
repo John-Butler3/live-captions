@@ -8,6 +8,7 @@ package is supported as a fallback with the same interface.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from typing import Optional
 
@@ -41,9 +42,11 @@ class FasterWhisperTranscriber(Transcriber):
         if compute_type == "default":
             compute_type = "int8" if device in ("cpu", "auto") else "float16"
         log.info("loading faster-whisper %s (device=%s, compute=%s)", model, device, compute_type)
-        kwargs = {"device": device, "compute_type": compute_type}
-        if threads:
-            kwargs["cpu_threads"] = threads
+        if not threads:
+            # CTranslate2 defaults to 4 threads; use the cores we have (capped).
+            threads = max(1, min(os.cpu_count() or 4, 8))
+        kwargs = {"device": device, "compute_type": compute_type, "cpu_threads": threads}
+        log.info("using %d CPU threads", threads)
         try:
             self._model = WhisperModel(model, **kwargs)
         except Exception:

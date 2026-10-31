@@ -19,6 +19,9 @@ log = logging.getLogger(__name__)
 class Translator:
     name = "none"
 
+    def prepare(self, source: Optional[str], target: str, on_status=None) -> None:
+        """Download/load whatever is needed for source -> target (may take a while)."""
+
     def translate(self, text: str, source: Optional[str], target: str) -> str:
         return ""
 
@@ -27,6 +30,9 @@ class ArgosTranslator(Translator):
     name = "argos"
 
     def __init__(self, target: str, auto_install: bool = True):
+        import os
+
+        os.environ.setdefault("ARGOS_DEVICE_TYPE", "cpu")
         import argostranslate.translate as at
 
         self._at = at
@@ -35,7 +41,16 @@ class ArgosTranslator(Translator):
         self._cache: dict[tuple[str, str], object] = {}
         self._missing: set[tuple[str, str]] = set()
 
-    def _get(self, source: str, target: str):
+    def prepare(self, source, target, on_status=None):
+        if not source or source == target:
+            return
+        tr = self._get(source, target, on_status)
+        if tr is not None:
+            if on_status:
+                on_status(f"loading translation {source} → {target}…")
+            tr.translate("Hello.")  # loads the CTranslate2 model and sentence splitter
+
+    def _get(self, source: str, target: str, on_status=None):
         key = (source, target)
         if key in self._cache:
             return self._cache[key]
@@ -43,10 +58,14 @@ class ArgosTranslator(Translator):
             return None
         tr = _argos_lookup(self._at, source, target)
         if tr is None and self.auto_install:
+            if on_status:
+                on_status(f"downloading language pack {source} → {target} (one-time, ~100 MB)…")
             if install_argos_pair(source, target):
                 tr = _argos_lookup(self._at, source, target)
         if tr is None:
             log.warning("no Argos translation %s -> %s available", source, target)
+            if on_status:
+                on_status(f"no translation available for {source} → {target}")
             self._missing.add(key)
             return None
         self._cache[key] = tr
