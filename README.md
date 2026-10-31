@@ -90,7 +90,10 @@ Run `live-captions --help` for everything. Useful knobs:
 * **Argos Translate** (`--translator argos`, used automatically when installed)
   translates between any pair of its ~40 languages, fully offline. Language
   packs are downloaded on first use (≈100 MB each; non-English pairs pivot
-  through English). It depends on PyTorch via Stanza, so the install is large.
+  through English). Captions are split into sentences with a simple
+  punctuation rule instead of Argos' Stanza models, which keeps start-up fast
+  and works for languages Stanza lacks (Malay, Tagalog, …). The package still
+  depends on PyTorch via Stanza, so the install is large.
 * **Whisper** (`--translator whisper`) uses the model's own speech translation.
   It only outputs English and shows just the English line, but needs no extra
   packages and no second model.

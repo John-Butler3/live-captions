@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Optional
 
 log = logging.getLogger(__name__)
@@ -24,6 +25,34 @@ class Translator:
 
     def translate(self, text: str, source: Optional[str], target: str) -> str:
         return ""
+
+
+class SimpleSentencizer:
+    """Punctuation-based sentence splitter used instead of Argos' Stanza/MiniSBD models.
+
+    Captions are a few seconds of speech, so a regex is accurate enough, and it
+    avoids loading a neural splitter per language (Stanza has no model for some
+    languages, e.g. Malay, and fails with "language ms is currently unsupported").
+    """
+
+    _split = re.compile(r"(?<=[.!?。！？])\s+")
+
+    def split_sentences(self, text: str) -> list[str]:
+        return [p for p in self._split.split(text.strip()) if p]
+
+    def __str__(self) -> str:
+        return "SimpleSentencizer"
+
+
+def _use_simple_sbd(translation) -> None:
+    """Swap the sentencizer on a (possibly pivoted/composite) Argos translation."""
+    if hasattr(translation, "sentencizer"):
+        translation.sentencizer = SimpleSentencizer()
+    # CachedTranslation.underlying, CompositeTranslation.t1/t2 (pivot via English)
+    for attr in ("underlying", "t1", "t2"):
+        sub = getattr(translation, attr, None)
+        if sub is not None:
+            _use_simple_sbd(sub)
 
 
 class ArgosTranslator(Translator):
@@ -68,6 +97,7 @@ class ArgosTranslator(Translator):
                 on_status(f"no translation available for {source} → {target}")
             self._missing.add(key)
             return None
+        _use_simple_sbd(tr)
         self._cache[key] = tr
         return tr
 

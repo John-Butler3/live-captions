@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from live_captions.settings import Settings, load_settings, save_settings  # noqa: E402
 from live_captions.languages import WHISPER_LANGUAGES, sorted_languages, language_name  # noqa: E402
 from live_captions.cli import build_parser  # noqa: E402
+from live_captions.translator import SimpleSentencizer, _use_simple_sbd  # noqa: E402
 
 
 class SettingsTests(unittest.TestCase):
@@ -53,6 +54,31 @@ class SettingsTests(unittest.TestCase):
         self.assertFalse(s.translate_partials)
         self.assertEqual(s.model, "tiny")        # untouched
         self.assertEqual(s.input_device, "Mic")  # untouched
+
+    def test_simple_sentencizer(self):
+        sp = SimpleSentencizer()
+        self.assertEqual(sp.split_sentences("Hello there. How are you?  Fine!"),
+                         ["Hello there.", "How are you?", "Fine!"])
+        self.assertEqual(sp.split_sentences("no punctuation at all"), ["no punctuation at all"])
+        self.assertEqual(sp.split_sentences("  "), [])
+        self.assertEqual(sp.split_sentences("你好。再见！"), ["你好。再见！"])  # no spaces: kept whole
+
+    def test_simple_sbd_applied_to_composite(self):
+        class T:
+            sentencizer = "stanza"
+
+        class C:
+            def __init__(self):
+                self.t1, self.t2 = T(), T()
+
+        class Cached:
+            def __init__(self):
+                self.underlying = C()
+
+        c = Cached()
+        _use_simple_sbd(c)
+        self.assertIsInstance(c.underlying.t1.sentencizer, SimpleSentencizer)
+        self.assertIsInstance(c.underlying.t2.sentencizer, SimpleSentencizer)
 
     def test_languages(self):
         self.assertEqual(sorted_languages()[0], ("en", "English"))
